@@ -2,9 +2,23 @@ package main
 
 import "core:fmt"
 import "core:mem"
-import "vendor:OpenGL"
+import "core:os"
+
+import "vendor:glfw"
+import gl "vendor:OpenGL"
 
 DISPLAY_SIZE : [2]u16 : { 64, 32 } // display has (0,0) in the top left
+WINDOW_SCALE :: 10
+WINDOW_TITLE :: "chip8-odin"
+GL_MAJOR_VERSION :: 4
+GL_MINOR_VERSION :: 1
+
+Color :: [4]f32
+COLOR_PALETTE : [2]Color : {
+    { 0.1, 0.1, 0.1, 1.0 },
+    { 0.9, 0.9, 0.9, 1.0 },
+}
+
 CHAR_SPRITES :: [?]u8 {
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
     0x20, 0x60, 0x20, 0x20, 0x70, // 1
@@ -36,9 +50,41 @@ Device :: struct {
 }
 
 dev: Device
+platform: glfw.WindowHandle
 
 main :: proc() {
     // TODO
+    if ! bool(glfw.Init()) {
+        fmt.eprintln("failed to init glfw")
+        os.exit(1)
+    }
+
+    platform = glfw.CreateWindow(i32(DISPLAY_SIZE.x * WINDOW_SCALE),
+                                 i32(DISPLAY_SIZE.y * WINDOW_SCALE),
+                                 WINDOW_TITLE,
+                                 nil,
+                                 nil)
+
+     defer glfw.Terminate()
+     defer glfw.DestroyWindow(platform)
+
+     if platform == nil {
+        fmt.eprintln("failed to create window")
+        os.exit(1)
+     }
+
+     glfw.MakeContextCurrent(platform)
+     gl.load_up_to(GL_MAJOR_VERSION, GL_MINOR_VERSION, glfw.gl_set_proc_address)
+
+     for ! glfw.WindowShouldClose(platform) {
+         glfw.PollEvents()
+
+         clear_color := COLOR_PALETTE[0]
+         gl.ClearColor(clear_color.r, clear_color.g, clear_color.b, clear_color.a)
+         gl.Clear(gl.COLOR_BUFFER_BIT)
+
+         glfw.SwapBuffers(platform)
+     }
 }
 
 /* SYS addr
