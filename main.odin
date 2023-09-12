@@ -2,18 +2,23 @@ package main
 
 import "core:fmt"
 import "core:mem"
-import "core:os"
+import "core:strings"
+import "core:runtime"
 
 import "vendor:glfw"
 import gl "vendor:OpenGL"
 
+import "logger"
+
+Color :: [4]f32
+Vertex :: [3]f32
+
 DISPLAY_SIZE : [2]u16 : { 64, 32 } // display has (0,0) in the top left
 WINDOW_SCALE :: 10
 WINDOW_TITLE :: "chip8-odin"
-GL_MAJOR_VERSION :: 4
-GL_MINOR_VERSION :: 1
+GL_MAJOR_VERSION :: 3
+GL_MINOR_VERSION :: 2 // macos go brr
 
-Color :: [4]f32
 COLOR_PALETTE : [2]Color : {
     { 0.1, 0.1, 0.1, 1.0 },
     { 0.9, 0.9, 0.9, 1.0 },
@@ -53,38 +58,164 @@ dev: Device
 platform: glfw.WindowHandle
 
 main :: proc() {
-    // TODO
+    context.allocator = mem.panic_allocator()
+    context.temp_allocator = mem.panic_allocator()
+
+    logger.init()
+    logger.set_level(logger.LogLevel.Info) // TODO: set based on build type
+
+    defer logger.cleanup()
+
+    logger.info("initialising glfw")
+    glfw.SetErrorCallback(glfw_error_callback)
     if ! bool(glfw.Init()) {
-        fmt.eprintln("failed to init glfw")
-        os.exit(1)
+        panic("failed to init glfw")
     }
 
+    logger.info("setting window hints")
+    glfw.WindowHint(glfw.CONTEXT_VERSION_MAJOR, GL_MAJOR_VERSION)
+    glfw.WindowHint(glfw.CONTEXT_VERSION_MINOR, GL_MINOR_VERSION)
+    glfw.WindowHint(glfw.OPENGL_FORWARD_COMPAT, 1)
+    glfw.WindowHint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+
+    logger.info("creating window")
     platform = glfw.CreateWindow(i32(DISPLAY_SIZE.x * WINDOW_SCALE),
                                  i32(DISPLAY_SIZE.y * WINDOW_SCALE),
                                  WINDOW_TITLE,
                                  nil,
                                  nil)
 
-     defer glfw.Terminate()
-     defer glfw.DestroyWindow(platform)
+    defer glfw.Terminate()
+    defer glfw.DestroyWindow(platform)
 
-     if platform == nil {
-        fmt.eprintln("failed to create window")
-        os.exit(1)
-     }
+    if platform == nil {
+       panic("failed to create window")
+    }
 
-     glfw.MakeContextCurrent(platform)
-     gl.load_up_to(GL_MAJOR_VERSION, GL_MINOR_VERSION, glfw.gl_set_proc_address)
+    glfw.SetKeyCallback(platform, glfw_key_callback)
 
-     for ! glfw.WindowShouldClose(platform) {
-         glfw.PollEvents()
+    logger.info("setting up opengl context")
+    glfw.MakeContextCurrent(platform)
+    glfw.SwapInterval(0)
 
-         clear_color := COLOR_PALETTE[0]
-         gl.ClearColor(clear_color.r, clear_color.g, clear_color.b, clear_color.a)
-         gl.Clear(gl.COLOR_BUFFER_BIT)
+    logger.info("loading up opengl to version ", GL_MAJOR_VERSION, ".", GL_MINOR_VERSION, sep="")
+    gl.load_up_to(GL_MAJOR_VERSION, GL_MINOR_VERSION, glfw.gl_set_proc_address)
 
-         glfw.SwapBuffers(platform)
-     }
+    logger.info("compiling/creating shader program")
+    vert_shader_src: []u8 = #load("vert.glsl")
+    frag_shader_src: []u8 = #load("frag.glsl")
+    vertShader: u32 = gl.CreateShader(gl.VERTEX_SHADER)
+    fragShader: u32 = gl.CreateShader(gl.FRAGMENT_SHADER)
+
+    vert_shader: u32
+    frag_shader: u32
+    ok: bool
+    if vert_shader, ok = compile_shader(&vert_shader_src, gl.VERTEX_SHADER); ! ok {
+        panic("failed to compile vertex shader")
+    }
+    if frag_shader, ok = compile_shader(&frag_shader_src, gl.FRAGMENT_SHADER); ! ok {
+        panic("failed to compile fragment shader")
+    }
+
+    defer gl.DeleteShader(vert_shader)
+    defer gl.DeleteShader(frag_shader)
+
+    program: u32 = gl.CreateProgram()
+    gl.AttachShader(program, vert_shader)
+    gl.AttachShader(program, frag_shader)
+    gl.LinkProgram(program)
+
+    {
+        success: i32
+        gl.GetProgramiv(program, gl.LINK_STATUS, &success)
+        if ! bool(success) {
+        BUF_SIZE :: 1024
+            buffer: [BUF_SIZE]u8
+            gl.GetProgramInfoLog(program, BUF_SIZE, nil, raw_data(&buffer))
+
+            error_msg := cstring(raw_data(&buffer))
+            panic_msg := strings.join({ "program error:", string(error_msg) }, "\n")
+            panic(panic_msg)
+        }
+    }
+
+    gl.UseProgram(program)
+
+    defer gl.DeleteProgram(program)
+
+    logger.info("creating buffers")
+    verts: [3]Vertex = {
+        { -0.5, -0.5, 0.0 },
+        {  0.5, -0.5, 0.0 },
+        {  0.0,  0.5, 0.0 },
+    }
+    vbo: u32
+    gl.GenBuffers(1, &vbo)
+    gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
+    gl.BufferData(gl.ARRAY_BUFFER, size_of(verts), &verts, gl.STATIC_DRAW)
+
+    vao: u32
+    gl.GenVertexArrays(1, &vao)
+    gl.BindVertexArray(vao)
+
+    gl.VertexAttribPointer(0, 3, gl.FLOAT, gl.FALSE, 3 * size_of(f32), 0)
+    gl.EnableVertexAttribArray(0)
+
+    logger.info("running main loop")
+    for ! glfw.WindowShouldClose(platform) {
+        glfw.PollEvents()
+
+        clear_color := COLOR_PALETTE[0]
+        gl.ClearColor(clear_color.r, clear_color.g, clear_color.b, clear_color.a)
+        gl.Clear(gl.COLOR_BUFFER_BIT)
+        gl.DrawArrays(gl.TRIANGLES, 0, 3)
+
+        glfw.SwapBuffers(platform)
+    }
+}
+
+compile_shader :: proc(shader_src: ^[]u8, type: u32) -> (u32, bool) {
+    shader_handle: u32 = gl.CreateShader(type)
+    gl.ShaderSource(shader_handle, 1, auto_cast shader_src, nil)
+    gl.CompileShader(shader_handle)
+
+    success: i32
+    gl.GetShaderiv(shader_handle, gl.COMPILE_STATUS, &success)
+    if ! bool(success) {
+        BUF_SIZE :: 1024
+        buffer: [BUF_SIZE]u8
+        gl.GetShaderInfoLog(shader_handle, BUF_SIZE, nil, raw_data(&buffer))
+
+        error_msg := cstring(raw_data(&buffer))
+        logger.error("shader compilation error:\n", error_msg)
+    }
+
+    return shader_handle, bool(success)
+}
+
+glfw_error_callback :: proc "c" (error: i32, desc: cstring) {
+    context = runtime.default_context()
+    logger.error("error in glfw (", error, "): ", desc)
+}
+
+glfw_key_callback :: proc "c" (window: glfw.WindowHandle, key: i32, scancode: i32, action: i32, mods: i32) {
+    context = runtime.default_context()
+
+    if window != platform do return
+    switch action {
+        // on key press
+        case glfw.PRESS:
+            switch key {
+                case glfw.KEY_ESCAPE:
+                    glfw.SetWindowShouldClose(platform, true)
+            }
+
+        // on key release
+        case glfw.RELEASE:
+            switch key {
+                // NOP
+            }
+    }
 }
 
 /* SYS addr
