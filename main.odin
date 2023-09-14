@@ -11,7 +11,6 @@ import gl "vendor:OpenGL"
 import "logger"
 
 Color :: [4]f32
-Vertex :: [3]f32
 
 DISPLAY_SIZE : [2]u16 : { 64, 32 } // display has (0,0) in the top left
 WINDOW_SCALE :: 10
@@ -143,30 +142,16 @@ main :: proc() {
 
     defer gl.DeleteProgram(program)
 
-    logger.info("creating buffers")
-    verts: [3]Vertex = {
-        { -0.5, -0.5, 0.0 },
-        {  0.5, -0.5, 0.0 },
-        {  0.0,  0.5, 0.0 },
-    }
-    vbo: u32
-    gl.GenBuffers(1, &vbo)
-    gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
-    gl.BufferData(gl.ARRAY_BUFFER, size_of(verts), &verts, gl.STATIC_DRAW)
-
+    logger.info("creating vao")
     vao: u32
     gl.GenVertexArrays(1, &vao)
     gl.BindVertexArray(vao)
-
-    gl.VertexAttribPointer(0, 3, gl.FLOAT, gl.FALSE, 3 * size_of(f32), 0)
-    gl.EnableVertexAttribArray(0)
 
     logger.info("running main loop")
     for ! glfw.WindowShouldClose(platform) {
         glfw.PollEvents()
 
-        clear_color := COLOR_PALETTE[0]
-        gl.ClearColor(clear_color.r, clear_color.g, clear_color.b, clear_color.a)
+        gl.ClearColor(1.0, 0.0, 1.0, 1.0)
         gl.Clear(gl.COLOR_BUFFER_BIT)
         gl.DrawArrays(gl.TRIANGLES, 0, 3)
 
