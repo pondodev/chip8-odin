@@ -139,13 +139,40 @@ main :: proc() {
     }
 
     gl.UseProgram(program)
-
     defer gl.DeleteProgram(program)
 
     logger.info("creating vao")
     vao: u32
     gl.GenVertexArrays(1, &vao)
     gl.BindVertexArray(vao)
+    defer gl.DeleteVertexArrays(1, &vao)
+
+    logger.info("loading texture")
+    // init the texture
+    texture_buffer: [DISPLAY_SIZE.x * DISPLAY_SIZE.y * 3]u8;
+    for _, i in texture_buffer {
+        component := i % 3;
+        color := COLOR_PALETTE[0]
+        texture_buffer[i] = u8(color[component] * 255)
+    }
+
+    texture: u32
+    gl.GenTextures(1, &texture)
+    gl.ActiveTexture(gl.TEXTURE0)
+    gl.BindTexture(gl.TEXTURE_2D, texture)
+
+    // clamp texture to border (set to red to spot issues with mapping)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_BORDER)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_BORDER)
+    tex_border_color: Color = { 1.0, 0.0, 0.0, 1.0 }
+    gl.TexParameterfv(gl.TEXTURE_2D, gl.TEXTURE_BORDER_COLOR, raw_data(&tex_border_color))
+
+    // nearest neighbour texture filtering
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+
+    gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGB, i32(DISPLAY_SIZE.x), i32(DISPLAY_SIZE.y), 0, gl.RGB, gl.UNSIGNED_BYTE, &texture_buffer)
+    defer gl.DeleteTextures(1, &texture)
 
     logger.info("running main loop")
     for ! glfw.WindowShouldClose(platform) {
