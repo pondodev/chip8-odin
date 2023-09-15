@@ -28,6 +28,8 @@ COLOR_PALETTE : [2]Color : {
 }
 
 platform: glfw.WindowHandle
+TEX_BUFFER_SIZE :: device.DISPLAY_SIZE.x * device.DISPLAY_SIZE.y * 3
+texture_buffer: [TEX_BUFFER_SIZE]u8
 
 main :: proc() {
     context.allocator = mem.panic_allocator()
@@ -49,6 +51,7 @@ main :: proc() {
     glfw.WindowHint(glfw.CONTEXT_VERSION_MINOR, GL_MINOR_VERSION)
     glfw.WindowHint(glfw.OPENGL_FORWARD_COMPAT, 1)
     glfw.WindowHint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+    glfw.WindowHint(glfw.RESIZABLE, 0)
 
     logger.info("creating window")
     platform = glfw.CreateWindow(i32(WINDOW_SIZE.x),
@@ -73,11 +76,45 @@ main :: proc() {
     logger.info("loading up opengl to version ", GL_MAJOR_VERSION, ".", GL_MINOR_VERSION, sep="")
     gl.load_up_to(GL_MAJOR_VERSION, GL_MINOR_VERSION, glfw.gl_set_proc_address)
 
-    logger.info("compiling/creating shader program")
+    vert_shader, frag_shader := create_shaders()
+    defer gl.DeleteShader(vert_shader)
+    defer gl.DeleteShader(frag_shader)
+
+    program := create_program(vert_shader, frag_shader)
+    defer gl.DeleteProgram(program)
+
+    vao := create_vao()
+    defer gl.DeleteVertexArrays(1, &vao)
+
+    texture := create_texture()
+    defer gl.DeleteTextures(1, &texture)
+
+    upload_texture()
+
+    logger.info("running main loop")
+    device.init()
+    for ! glfw.WindowShouldClose(platform) {
+        glfw.PollEvents()
+
+        device.update()
+
+        gl.ClearColor(1.0, 0.0, 1.0, 1.0)
+        if device.is_display_dirty() {
+            update_texture()
+            upload_texture()
+        }
+
+        gl.Clear(gl.COLOR_BUFFER_BIT)
+        gl.DrawArrays(gl.TRIANGLES, 0, 3)
+
+        glfw.SwapBuffers(platform)
+    }
+}
+
+create_shaders :: proc() -> (u32, u32) {
+    logger.info("loading and compiling shaders")
     vert_shader_src: []u8 = #load("vert.glsl")
     frag_shader_src: []u8 = #load("frag.glsl")
-    vertShader: u32 = gl.CreateShader(gl.VERTEX_SHADER)
-    fragShader: u32 = gl.CreateShader(gl.FRAGMENT_SHADER)
 
     vert_shader: u32
     frag_shader: u32
@@ -89,40 +126,63 @@ main :: proc() {
         panic("failed to compile fragment shader")
     }
 
-    defer gl.DeleteShader(vert_shader)
-    defer gl.DeleteShader(frag_shader)
+    return vert_shader, frag_shader
+}
 
+compile_shader :: proc(shader_src: ^[]u8, type: u32) -> (u32, bool) {
+    shader_handle: u32 = gl.CreateShader(type)
+    gl.ShaderSource(shader_handle, 1, auto_cast shader_src, nil)
+    gl.CompileShader(shader_handle)
+
+    success: i32
+    gl.GetShaderiv(shader_handle, gl.COMPILE_STATUS, &success)
+    if ! bool(success) {
+        BUF_SIZE :: 1024
+        buffer: [BUF_SIZE]u8
+        gl.GetShaderInfoLog(shader_handle, BUF_SIZE, nil, raw_data(&buffer))
+
+        error_msg := cstring(raw_data(&buffer))
+        logger.error("shader compilation error:\n", error_msg, sep="")
+    }
+
+    return shader_handle, bool(success)
+}
+
+create_program :: proc(vert_shader, frag_shader: u32) -> u32 {
+    logger.info("creating program and linking shaders")
     program: u32 = gl.CreateProgram()
     gl.AttachShader(program, vert_shader)
     gl.AttachShader(program, frag_shader)
     gl.LinkProgram(program)
 
-    {
-        success: i32
-        gl.GetProgramiv(program, gl.LINK_STATUS, &success)
-        if ! bool(success) {
+    ok: i32
+    gl.GetProgramiv(program, gl.LINK_STATUS, &ok)
+    if ! bool(ok) {
         BUF_SIZE :: 1024
-            buffer: [BUF_SIZE]u8
-            gl.GetProgramInfoLog(program, BUF_SIZE, nil, raw_data(&buffer))
+        buffer: [BUF_SIZE]u8
+        gl.GetProgramInfoLog(program, BUF_SIZE, nil, raw_data(&buffer))
 
-            error_msg := cstring(raw_data(&buffer))
-            panic_msg := strings.join({ "program error:", string(error_msg) }, "\n")
-            panic(panic_msg)
-        }
+        error_msg := cstring(raw_data(&buffer))
+        panic_msg := strings.join({ "program error:", string(error_msg) }, "\n")
+        panic(panic_msg)
     }
 
     gl.UseProgram(program)
-    defer gl.DeleteProgram(program)
+    return program
+}
 
+create_vao :: proc() -> u32 {
     logger.info("creating vao")
     vao: u32
     gl.GenVertexArrays(1, &vao)
     gl.BindVertexArray(vao)
-    defer gl.DeleteVertexArrays(1, &vao)
 
+    return vao
+}
+
+create_texture :: proc() -> u32 {
     logger.info("loading texture")
     // init the texture
-    texture_buffer: [device.DISPLAY_SIZE.x * device.DISPLAY_SIZE.y * 3]u8;
     for _, i in texture_buffer {
         component := i % 3;
         color := COLOR_PALETTE[0]
@@ -144,69 +204,40 @@ main :: proc() {
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
 
-    upload_texture(texture_buffer)
-    defer gl.DeleteTextures(1, &texture)
+    return texture
+}
 
-    logger.info("running main loop")
-    device.init()
-    for ! glfw.WindowShouldClose(platform) {
-        glfw.PollEvents()
+update_texture :: proc() {
+    display_buffer: []u8 = device.get_display_buffer()
+    for chunk, i in display_buffer {
+        for bit in 0..=7 {
+            pixel_index := (i * 8) + bit
+            buffer_index := pixel_index * 3
 
-        device.update()
-
-        gl.ClearColor(1.0, 0.0, 1.0, 1.0)
-        // TODO: clean this up
-        if device.is_display_dirty() {
-            display_buffer: []u8 = device.get_display_buffer()
-            for chunk, i in display_buffer {
-                for bit in 0..=7 {
-                    pixel_index := (i * 8) + bit
-                    buffer_index := pixel_index * 3
-
-                    pixel_on: bool = bool(chunk & (1 << u8(bit)))
-                    color := pixel_on ? COLOR_PALETTE[1] : COLOR_PALETTE[0]
-                    texture_buffer[buffer_index+0] = u8(color.r * 255)
-                    texture_buffer[buffer_index+1] = u8(color.g * 255)
-                    texture_buffer[buffer_index+2] = u8(color.b * 255)
-                }
-            }
-            upload_texture(texture_buffer)
+            pixel_on := bool(chunk & (1 << u8(bit)))
+            color := pixel_on ? COLOR_PALETTE[1] : COLOR_PALETTE[0]
+            texture_buffer[buffer_index+0] = u8(color.r * 255)
+            texture_buffer[buffer_index+1] = u8(color.g * 255)
+            texture_buffer[buffer_index+2] = u8(color.b * 255)
         }
-
-        gl.Clear(gl.COLOR_BUFFER_BIT)
-        gl.DrawArrays(gl.TRIANGLES, 0, 3)
-
-        glfw.SwapBuffers(platform)
     }
 }
 
-compile_shader :: proc(shader_src: ^[]u8, type: u32) -> (u32, bool) {
-    shader_handle: u32 = gl.CreateShader(type)
-    gl.ShaderSource(shader_handle, 1, auto_cast shader_src, nil)
-    gl.CompileShader(shader_handle)
-
-    success: i32
-    gl.GetShaderiv(shader_handle, gl.COMPILE_STATUS, &success)
-    if ! bool(success) {
-        BUF_SIZE :: 1024
-        buffer: [BUF_SIZE]u8
-        gl.GetShaderInfoLog(shader_handle, BUF_SIZE, nil, raw_data(&buffer))
-
-        error_msg := cstring(raw_data(&buffer))
-        logger.error("shader compilation error:\n", error_msg)
-    }
-
-    return shader_handle, bool(success)
-}
-
-upload_texture :: proc(texture: [device.DISPLAY_SIZE.x * device.DISPLAY_SIZE.y * 3]u8) {
-    texture := texture
-    gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGB, i32(device.DISPLAY_SIZE.x), i32(device.DISPLAY_SIZE.y), 0, gl.RGB, gl.UNSIGNED_BYTE, &texture)
+upload_texture :: proc() {
+    gl.TexImage2D(gl.TEXTURE_2D,
+                  0,
+                  gl.RGB,
+                  i32(device.DISPLAY_SIZE.x),
+                  i32(device.DISPLAY_SIZE.y),
+                  0,
+                  gl.RGB,
+                  gl.UNSIGNED_BYTE,
+                  &texture_buffer)
 }
 
 glfw_error_callback :: proc "c" (error: i32, desc: cstring) {
     context = runtime.default_context()
-    logger.error("error in glfw (", error, "): ", desc)
+    logger.error("error in glfw (", error, "):", desc)
 }
 
 glfw_key_callback :: proc "c" (window: glfw.WindowHandle, key: i32, scancode: i32, action: i32, mods: i32) {
