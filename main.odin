@@ -31,6 +31,9 @@ platform: glfw.WindowHandle
 TEX_BUFFER_SIZE :: device.DISPLAY_SIZE.x * device.DISPLAY_SIZE.y * 3
 texture_buffer: [TEX_BUFFER_SIZE]u8
 
+// TODO: user input for rom
+ROM_PATH :: "./trip8.ch8"
+
 main :: proc() {
     context.allocator = mem.panic_allocator()
     context.temp_allocator = mem.panic_allocator()
@@ -91,8 +94,12 @@ main :: proc() {
 
     upload_texture()
 
-    logger.info("running main loop")
     device.init()
+    if ! device.load_rom(ROM_PATH) {
+        panic("failed to load rom")
+    }
+
+    logger.info("running main loop")
     for ! glfw.WindowShouldClose(platform) {
         glfw.PollEvents()
 
